@@ -1,0 +1,37 @@
+version: '3.9'
+
+services:
+  postgres:
+    image: postgres:15
+    container_name: wikilive-db
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: wikilive
+      POSTGRES_USER: wikilive
+      POSTGRES_PASSWORD: wikilive
+    ports:
+      - "5432:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+
+  backend:
+    build:
+      context: .
+      dockerfile: server/WikiLive.Api/Dockerfile
+    container_name: wikilive-api
+    restart: unless-stopped
+    depends_on:
+      - postgres
+    environment:
+      ASPNETCORE_ENVIRONMENT: Development
+      ASPNETCORE_URLS: http://+:8080
+      ConnectionStrings__Default: Host=postgres;Port=5432;Database=wikilive;Username=wikilive;Password=wikilive
+      Database__UseInMemory: "false"
+      Mws__BaseUrl: https://tables.mws.ru
+      Mws__Token: Bearer uskrTHXI1Qgr1Jp91PTMT5c
+      Mws__UseMock: "false"
+    ports:
+      - "5099:8080"
+
+volumes:
+  postgres_data:
