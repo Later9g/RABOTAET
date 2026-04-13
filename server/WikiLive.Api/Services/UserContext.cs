@@ -1,5 +1,3 @@
-using Microsoft.AspNetCore.Http;
-
 namespace WikiLive.Api.Services;
 
 public interface IUserContext
@@ -7,7 +5,7 @@ public interface IUserContext
     string GetUserId();
 }
 
-public class HeaderUserContext : IUserContext
+public sealed class HeaderUserContext : IUserContext
 {
     private readonly IHttpContextAccessor _httpContextAccessor;
 
@@ -18,8 +16,7 @@ public class HeaderUserContext : IUserContext
 
     public string GetUserId()
     {
-        var ctx = _httpContextAccessor.HttpContext;
-        var fromHeader = ctx?.Request.Headers["X-User-Id"].FirstOrDefault();
-        return string.IsNullOrWhiteSpace(fromHeader) ? "demo-user" : fromHeader!;
+        var value = _httpContextAccessor.HttpContext?.Request.Headers["X-User-Id"].FirstOrDefault();
+        return string.IsNullOrWhiteSpace(value) ? "demo-user" : value!;
     }
 }

@@ -1,256 +1,323 @@
-using System.Net.Http.Headers;
-using System.Text.Json;
 using Microsoft.Extensions.Options;
+using System.Net.Http.Headers;
+using System.Text;
+using System.Text.Json;
+using WikiLive.Api.Contracts.Mws;
 
 namespace WikiLive.Api.Services;
 
-public class MwsOptions
+public sealed class MwsOptions
 {
     public string BaseUrl { get; set; } = string.Empty;
     public string Token { get; set; } = string.Empty;
-    public bool UseMock { get; set; }
 }
 
-public record MwsSpaceDto(string Id, string Name);
-public record MwsDatasheetDto(string Id, string SpaceId, string Title);
-
-public interface IMwsTablesClient
-{
-    Task<IReadOnlyList<MwsSpaceDto>> GetSpacesAsync(CancellationToken ct);
-    Task<IReadOnlyList<MwsDatasheetDto>> GetDatasheetsAsync(string spaceId, CancellationToken ct);
-    Task<object> GetFieldsAsync(string dstId, string? viewId, CancellationToken ct);
-    Task<object> GetViewsAsync(string dstId, CancellationToken ct);
-    Task<object> GetRecordsAsync(string dstId, string? viewId, int? pageSize, int? pageNum, int? maxRecords, string? cellFormat, string? fieldKey, CancellationToken ct);
-}
-
-public class MwsTablesClient : IMwsTablesClient
+public sealed class MwsTablesClient : IMwsTablesClient
 {
     private readonly HttpClient _httpClient;
     private readonly MwsOptions _options;
+    private static readonly JsonSerializerOptions JsonOptions = new(JsonSerializerDefaults.Web)
+    {
+        PropertyNameCaseInsensitive = true
+    };
 
     public MwsTablesClient(HttpClient httpClient, IOptions<MwsOptions> options)
     {
         _httpClient = httpClient;
         _options = options.Value;
-    }
 
-    public async Task<IReadOnlyList<MwsSpaceDto>> GetSpacesAsync(CancellationToken ct)
-    {
-        if (_options.UseMock)
-        {
-            return [new("spc-demo", "Demo Space")];
-        }
+        if (!string.IsNullOrWhiteSpace(_options.BaseUrl))
+            _httpClient.BaseAddress = new Uri(_options.BaseUrl.TrimEnd('/') + "/");
 
-        var doc = await SendJsonAsync(HttpMethod.Get, BuildUrl("/fusion/v1/spaces"), ct);
-        return ExtractSpaces(doc.RootElement);
-    }
-
-    public async Task<IReadOnlyList<MwsDatasheetDto>> GetDatasheetsAsync(string spaceId, CancellationToken ct)
-    {
-        if (_options.UseMock)
-        {
-            return new List<MwsDatasheetDto>
-            {
-                new("dst-sales", spaceId, "Продажи Q2"),
-                new("dst-hr", spaceId, "HR План"),
-                new("dst-risks", spaceId, "Риски проекта")
-            };
-        }
-
-        var doc = await SendJsonAsync(HttpMethod.Get, BuildUrl($"/fusion/v1/spaces/{spaceId}/nodes"), ct);
-        return ExtractDatasheets(spaceId, doc.RootElement);
-    }
-
-    public async Task<object> GetFieldsAsync(string dstId, string? viewId, CancellationToken ct)
-    {
-        if (_options.UseMock)
-        {
-            return new
-            {
-                data = new
-                {
-                    fields = new object[]
-                    {
-                        new { id = "fld-region", name = "Регион" },
-                        new { id = "fld-plan", name = "План" },
-                        new { id = "fld-fact", name = "Факт" },
-                        new { id = "fld-status", name = "Статус" }
-                    }
-                }
-            };
-        }
-
-        var query = string.IsNullOrWhiteSpace(viewId) ? string.Empty : $"?viewId={Uri.EscapeDataString(viewId)}";
-        var doc = await SendJsonAsync(HttpMethod.Get, BuildUrl($"/fusion/v1/datasheets/{dstId}/fields{query}"), ct);
-        return JsonSerializer.Deserialize<object>(doc.RootElement.GetRawText())!;
-    }
-
-    public async Task<object> GetViewsAsync(string dstId, CancellationToken ct)
-    {
-        if (_options.UseMock)
-        {
-            return new
-            {
-                data = new
-                {
-                    views = new object[]
-                    {
-                        new { id = "viw-main", name = "Основное" }
-                    }
-                }
-            };
-        }
-
-        var doc = await SendJsonAsync(HttpMethod.Get, BuildUrl($"/fusion/v1/datasheets/{dstId}/views"), ct);
-        return JsonSerializer.Deserialize<object>(doc.RootElement.GetRawText())!;
-    }
-
-    public async Task<object> GetRecordsAsync(string dstId, string? viewId, int? pageSize, int? pageNum, int? maxRecords, string? cellFormat, string? fieldKey, CancellationToken ct)
-    {
-        if (_options.UseMock)
-        {
-            return dstId switch
-            {
-                "dst-sales" => new
-                {
-                    data = new
-                    {
-                        records = new object[]
-                        {
-                            new { recordId = "rec-1", fields = new Dictionary<string, object> { ["Регион"] = "EMEA", ["План"] = 1200000, ["Факт"] = 1170000, ["Статус"] = "В процессе" } },
-                            new { recordId = "rec-2", fields = new Dictionary<string, object> { ["Регион"] = "APAC", ["План"] = 900000, ["Факт"] = 960000, ["Статус"] = "Перевыполнение" } },
-                            new { recordId = "rec-3", fields = new Dictionary<string, object> { ["Регион"] = "LATAM", ["План"] = 300000, ["Факт"] = 250000, ["Статус"] = "Риск" } }
-                        }
-                    }
-                },
-                _ => new { data = new { records = Array.Empty<object>() } }
-            };
-        }
-
-        var query = new List<string>();
-        if (!string.IsNullOrWhiteSpace(viewId)) query.Add($"viewId={Uri.EscapeDataString(viewId)}");
-        if (pageSize.HasValue) query.Add($"pageSize={pageSize.Value}");
-        if (pageNum.HasValue) query.Add($"pageNum={pageNum.Value}");
-        if (maxRecords.HasValue) query.Add($"maxRecords={maxRecords.Value}");
-        if (!string.IsNullOrWhiteSpace(cellFormat)) query.Add($"cellFormat={Uri.EscapeDataString(cellFormat)}");
-        if (!string.IsNullOrWhiteSpace(fieldKey)) query.Add($"fieldKey={Uri.EscapeDataString(fieldKey)}");
-
-        var qs = query.Count == 0 ? string.Empty : $"?{string.Join("&", query)}";
-        var doc = await SendJsonAsync(HttpMethod.Get, BuildUrl($"/fusion/v1/datasheets/{dstId}/records{qs}"), ct);
-        return JsonSerializer.Deserialize<object>(doc.RootElement.GetRawText())!;
-    }
-
-    private async Task<JsonDocument> SendJsonAsync(HttpMethod method, string url, CancellationToken ct)
-    {
-        using var request = new HttpRequestMessage(method, url);
         if (!string.IsNullOrWhiteSpace(_options.Token))
         {
-            var token = _options.Token.Replace("Bearer ", string.Empty, StringComparison.OrdinalIgnoreCase);
-            request.Headers.Authorization = new AuthenticationHeaderValue("Bearer", token);
+            var token = _options.Token.Replace("Bearer ", "", StringComparison.OrdinalIgnoreCase);
+            _httpClient.DefaultRequestHeaders.Authorization = new AuthenticationHeaderValue("Bearer", token);
+        }
+    }
+
+    public Task<GetSpacesResponseDto> GetSpacesAsync(CancellationToken ct)
+        => SendAsync<GetSpacesResponseDto>(HttpMethod.Get, "fusion/v1/spaces", null, ct);
+
+    public Task<GetSpaceNodesResponseDto> GetSpaceNodesAsync(string spaceId, CancellationToken ct)
+        => SendAsync<GetSpaceNodesResponseDto>(HttpMethod.Get, $"fusion/v1/spaces/{spaceId}/nodes", null, ct);
+
+    public async Task<GetDatasheetsResponseDto> GetDatasheetsAsync(string spaceId, CancellationToken ct)
+    {
+        var nodes = await GetSpaceNodesAsync(spaceId, ct);
+
+        var result = new GetDatasheetsResponseDto();
+
+        foreach (var item in nodes.Data.Nodes)
+        {
+            var type = item.Type ?? item.NodeType;
+            var id = !string.IsNullOrWhiteSpace(item.DstId) ? item.DstId : item.Id;
+
+            if (string.Equals(type, "datasheet", StringComparison.OrdinalIgnoreCase) ||
+                (!string.IsNullOrWhiteSpace(id) && id.StartsWith("dst", StringComparison.OrdinalIgnoreCase)))
+            {
+                result.Data.Datasheets.Add(new DatasheetNodeDto
+                {
+                    Id = item.Id,
+                    DstId = item.DstId,
+                    Name = item.Name,
+                    Title = item.Title,
+                    Type = item.Type,
+                    NodeType = item.NodeType
+                });
+            }
+        }
+
+        return result;
+    }
+
+    public Task<CreateDatasheetResponseDto> CreateDatasheetAsync(
+        string spaceId,
+        CreateDatasheetRequestDto request,
+        CancellationToken ct)
+        => SendAsync<CreateDatasheetResponseDto>(
+            HttpMethod.Post,
+            $"fusion/v1/spaces/{spaceId}/datasheets",
+            request,
+            ct);
+
+    public Task<DeleteDatasheetResponseDto> DeleteDatasheetAsync(string spaceId, string dstId, CancellationToken ct)
+     => SendAsync<DeleteDatasheetResponseDto>(
+         HttpMethod.Delete,
+         $"fusion/v1/spaces/{spaceId}/datasheet/{dstId}",
+         null,
+         ct);
+
+    public Task<GetRecordsResponseDto> GetRecordsAsync(
+        string dstId,
+        string? viewId,
+        int? pageSize,
+        int? pageNum,
+        int? maxRecords,
+        string? cellFormat,
+        string? fieldKey,
+        CancellationToken ct)
+    {
+        var query = BuildQuery(new Dictionary<string, string?>
+        {
+            ["viewId"] = viewId,
+            ["pageSize"] = pageSize?.ToString(),
+            ["pageNum"] = pageNum?.ToString(),
+            ["maxRecords"] = maxRecords?.ToString(),
+            ["cellFormat"] = cellFormat,
+            ["fieldKey"] = fieldKey
+        });
+
+        return SendAsync<GetRecordsResponseDto>(
+            HttpMethod.Get,
+            $"fusion/v1/datasheets/{dstId}/records{query}",
+            null,
+            ct);
+    }
+
+    public Task<MutateRecordsResponseDto> CreateRecordsAsync(string dstId, CreateRecordsRequestDto request, CancellationToken ct)
+        => SendAsync<MutateRecordsResponseDto>(
+            HttpMethod.Post,
+            $"fusion/v1/datasheets/{dstId}/records",
+            request,
+            ct);
+
+    public Task<MutateRecordsResponseDto> UpdateRecordsAsync(string dstId, UpdateRecordsRequestDto request, CancellationToken ct)
+        => SendAsync<MutateRecordsResponseDto>(
+            HttpMethod.Patch,
+            $"fusion/v1/datasheets/{dstId}/records",
+            request,
+            ct);
+
+    public Task<MutateRecordsResponseDto> DeleteRecordsAsync(string dstId, DeleteRecordsRequestDto request, CancellationToken ct)
+        => SendAsync<MutateRecordsResponseDto>(
+            HttpMethod.Delete,
+            $"fusion/v1/datasheets/{dstId}/records",
+            request,
+            ct);
+
+    public Task<GetTimemachineResponseDto> GetTimemachineAsync(string dstId, CancellationToken ct)
+     => SendAsync<GetTimemachineResponseDto>(
+         HttpMethod.Get,
+         $"fusion/v1/timemachine/{dstId}",
+         null,
+         ct);
+
+    public Task<GetFieldsResponseDto> GetFieldsAsync(string dstId, string? viewId, CancellationToken ct)
+    {
+        var query = BuildQuery(new Dictionary<string, string?>
+        {
+            ["viewId"] = viewId
+        });
+
+        return SendAsync<GetFieldsResponseDto>(
+            HttpMethod.Get,
+            $"fusion/v1/datasheets/{dstId}/fields{query}",
+            null,
+            ct);
+    }
+
+    public Task<CreateFieldResponseDto> CreateFieldAsync(string spaceId, string dstId, CreateFieldRequestDto request, CancellationToken ct)
+        => SendAsync<CreateFieldResponseDto>(
+            HttpMethod.Post,
+            $"fusion/v1/spaces/{spaceId}/datasheets/{dstId}/fields",
+            request,
+            ct);
+
+    public Task<DeleteFieldResponseDto> DeleteFieldAsync(string spaceId, string dstId, string fieldId, CancellationToken ct)
+    => SendAsync<DeleteFieldResponseDto>(
+        HttpMethod.Delete,
+        $"fusion/v1/spaces/{spaceId}/datasheets/{dstId}/fields/{fieldId}",
+        null,
+        ct);
+
+    public Task<MoveFieldResponseDto> MoveFieldAsync(string dstId, string viewId, string fieldId, MoveFieldRequestDto request, CancellationToken ct)
+        => SendAsync<MoveFieldResponseDto>(
+            HttpMethod.Patch,
+            $"fusion/v1/datasheets/{dstId}/views/{viewId}/fields/{fieldId}",
+            request,
+            ct);
+
+    public Task<GetViewsResponseDto> GetViewsAsync(string dstId, CancellationToken ct)
+        => SendAsync<GetViewsResponseDto>(
+            HttpMethod.Get,
+            $"fusion/v1/datasheets/{dstId}/views",
+            null,
+            ct);
+
+    public Task<MutateViewResponseDto> CreateViewAsync(string spaceId, string dstId, CreateViewRequestDto request, CancellationToken ct)
+        => SendAsync<MutateViewResponseDto>(
+            HttpMethod.Post,
+            $"fusion/v1/spaces/{spaceId}/datasheets/{dstId}/views",
+            request,
+            ct);
+
+    public Task<MutateViewResponseDto> UpdateViewAsync(string spaceId, string dstId, string viewId, UpdateViewRequestDto request, CancellationToken ct)
+        => SendAsync<MutateViewResponseDto>(
+            HttpMethod.Put,
+            $"fusion/v1/spaces/{spaceId}/datasheets/{dstId}/views/{viewId}",
+            request,
+            ct);
+
+    public Task<DeleteViewResponseDto> DeleteViewAsync(string spaceId, string dstId, string viewId, CancellationToken ct)
+        => SendAsync<DeleteViewResponseDto>(
+            HttpMethod.Delete,
+            $"fusion/v1/spaces/{spaceId}/datasheets/{dstId}/views/{viewId}",
+            null,
+            ct);
+
+    public Task<MutateViewResponseDto> SortViewAsync(string spaceId, string dstId, string viewId, SortViewRequestDto request, CancellationToken ct)
+        => SendAsync<MutateViewResponseDto>(
+            HttpMethod.Post,
+            $"fusion/v1/spaces/{spaceId}/datasheets/{dstId}/views/{viewId}/sort",
+            request,
+            ct);
+
+    public Task<MutateViewResponseDto> GroupViewAsync(string spaceId, string dstId, string viewId, GroupViewRequestDto request, CancellationToken ct)
+        => SendAsync<MutateViewResponseDto>(
+            HttpMethod.Post,
+            $"fusion/v1/spaces/{spaceId}/datasheets/{dstId}/views/{viewId}/group",
+            request,
+            ct);
+
+    public Task<MutateViewResponseDto> HideFieldsAsync(string spaceId, string dstId, string viewId, HideFieldsRequestDto request, CancellationToken ct)
+        => SendAsync<MutateViewResponseDto>(
+            HttpMethod.Post,
+            $"fusion/v1/spaces/{spaceId}/datasheets/{dstId}/views/{viewId}/hidden",
+            request,
+            ct);
+
+    public Task<MutateViewResponseDto> MoveViewAsync(string spaceId, string dstId, string viewId, MoveViewRequestDto request, CancellationToken ct)
+        => SendAsync<MutateViewResponseDto>(
+            HttpMethod.Post,
+            $"fusion/v1/spaces/{spaceId}/datasheets/{dstId}/views/{viewId}/move",
+            request,
+            ct);
+
+    public async Task<byte[]> DownloadAttachmentAsync(string dstId, string token, CancellationToken ct)
+    {
+        using var response = await _httpClient.GetAsync(
+            $"fusion/v1/datasheets/{dstId}/attachments?token={Uri.EscapeDataString(token)}",
+            ct);
+
+        await EnsureSuccessAsync(response, ct);
+        return await response.Content.ReadAsByteArrayAsync(ct);
+    }
+
+    public async Task<UploadAttachmentResponseDto> UploadAttachmentAsync(string dstId, HttpContent content, CancellationToken ct)
+    {
+        using var request = new HttpRequestMessage(HttpMethod.Post, $"fusion/v1/datasheets/{dstId}/attachments")
+        {
+            Content = content
+        };
+
+        using var response = await _httpClient.SendAsync(request, ct);
+        await EnsureSuccessAsync(response, ct);
+
+        await using var stream = await response.Content.ReadAsStreamAsync(ct);
+        var result = await JsonSerializer.DeserializeAsync<UploadAttachmentResponseDto>(stream, JsonOptions, ct);
+        return result ?? new UploadAttachmentResponseDto();
+    }
+
+    private async Task<T> SendAsync<T>(HttpMethod method, string url, object? body, CancellationToken ct)
+    {
+        using var request = new HttpRequestMessage(method, url);
+
+        if (body is not null)
+        {
+            var json = JsonSerializer.Serialize(body, JsonOptions);
+            request.Content = new StringContent(json, Encoding.UTF8, "application/json");
         }
 
         using var response = await _httpClient.SendAsync(request, ct);
-        var body = await response.Content.ReadAsStringAsync(ct);
-        if (!response.IsSuccessStatusCode)
-        {
-            throw new HttpRequestException($"MWS request failed: {(int)response.StatusCode} {response.ReasonPhrase}. Body: {body}");
-        }
+        await EnsureSuccessAsync(response, ct);
 
-        return JsonDocument.Parse(body);
-    }
+        await using var stream = await response.Content.ReadAsStreamAsync(ct);
+        var result = await JsonSerializer.DeserializeAsync<T>(stream, JsonOptions, ct);
 
-    private string BuildUrl(string path)
-    {
-        if (string.IsNullOrWhiteSpace(_options.BaseUrl))
-            throw new InvalidOperationException("Mws:BaseUrl is not configured.");
+        if (result is null)
+            throw new Exception($"Empty response for {url}");
 
-        return $"{_options.BaseUrl.TrimEnd('/')}{path}";
-    }
-
-    private static IReadOnlyList<MwsSpaceDto> ExtractSpaces(JsonElement root)
-    {
-        var result = new List<MwsSpaceDto>();
-        if (TryGetNestedArray(root, out var spaces, "data", "spaces"))
-        {
-            foreach (var item in spaces.EnumerateArray())
-            {
-                var id = GetString(item, "id");
-                var name = GetString(item, "name") ?? id;
-                if (!string.IsNullOrWhiteSpace(id))
-                {
-                    result.Add(new MwsSpaceDto(id!, name ?? id!));
-                }
-            }
-        }
         return result;
     }
 
-    private static IReadOnlyList<MwsDatasheetDto> ExtractDatasheets(string spaceId, JsonElement root)
+    public async Task<DownloadAttachmentMetadataDto> GetAttachmentMetadataAsync(string dstId, string token, CancellationToken ct)
     {
-        var result = new List<MwsDatasheetDto>();
-        if (TryGetNestedArray(root, out var nodes, "data", "nodes"))
+        using var request = new HttpRequestMessage(
+            HttpMethod.Head,
+            $"fusion/v1/datasheets/{dstId}/attachments?token={Uri.EscapeDataString(token)}");
+
+        using var response = await _httpClient.SendAsync(request, HttpCompletionOption.ResponseHeadersRead, ct);
+        await EnsureSuccessAsync(response, ct);
+
+        return new DownloadAttachmentMetadataDto
         {
-            foreach (var item in nodes.EnumerateArray())
-            {
-                var id = GetString(item, "id")
-                         ?? GetString(item, "dstId")
-                         ?? GetString(item, "datasheetId")
-                         ?? GetString(item, "nodeId");
-
-                var title = GetString(item, "name")
-                            ?? GetString(item, "title")
-                            ?? id;
-
-                var looksLikeDatasheet = false;
-                var typeText = GetString(item, "type")
-                               ?? GetString(item, "nodeType")
-                               ?? GetString(item, "kind");
-
-                if (!string.IsNullOrWhiteSpace(typeText) && typeText!.Contains("datasheet", StringComparison.OrdinalIgnoreCase))
-                {
-                    looksLikeDatasheet = true;
-                }
-
-                if (!looksLikeDatasheet && !string.IsNullOrWhiteSpace(id) && id!.StartsWith("dst", StringComparison.OrdinalIgnoreCase))
-                {
-                    looksLikeDatasheet = true;
-                }
-
-                if (looksLikeDatasheet && !string.IsNullOrWhiteSpace(id))
-                {
-                    result.Add(new MwsDatasheetDto(id!, spaceId, title ?? id!));
-                }
-            }
-        }
-        return result;
+            FileName = response.Content.Headers.ContentDisposition?.FileName?.Trim('"')
+                       ?? response.Content.Headers.ContentDisposition?.FileNameStar,
+            MimeType = response.Content.Headers.ContentType?.MediaType,
+            Size = response.Content.Headers.ContentLength
+        };
     }
 
-    private static bool TryGetNestedArray(JsonElement root, out JsonElement array, params string[] path)
+    private static async Task EnsureSuccessAsync(HttpResponseMessage response, CancellationToken ct)
     {
-        array = root;
-        foreach (var segment in path)
-        {
-            if (!array.TryGetProperty(segment, out array))
-            {
-                return false;
-            }
-        }
+        if (response.IsSuccessStatusCode) return;
 
-        return array.ValueKind == JsonValueKind.Array;
+        var body = response.Content == null
+            ? string.Empty
+            : await response.Content.ReadAsStringAsync(ct);
+
+        throw new HttpRequestException(
+            $"FUSION API error: {(int)response.StatusCode} {response.ReasonPhrase}. Body: {body}");
     }
 
-    private static string? GetString(JsonElement element, string name)
+    private static string BuildQuery(Dictionary<string, string?> parameters)
     {
-        if (element.TryGetProperty(name, out var prop))
-        {
-            return prop.ValueKind switch
-            {
-                JsonValueKind.String => prop.GetString(),
-                JsonValueKind.Number => prop.GetRawText(),
-                _ => null
-            };
-        }
+        var parts = parameters
+            .Where(x => !string.IsNullOrWhiteSpace(x.Value))
+            .Select(x => $"{Uri.EscapeDataString(x.Key)}={Uri.EscapeDataString(x.Value!)}")
+            .ToArray();
 
-        return null;
+        return parts.Length == 0 ? string.Empty : "?" + string.Join("&", parts);
     }
 }

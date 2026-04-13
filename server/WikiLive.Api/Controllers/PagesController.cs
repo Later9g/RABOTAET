@@ -38,6 +38,7 @@ public class PagesController : ControllerBase
     public async Task<IActionResult> Update(Guid id, [FromBody] UpdatePageRequest request, CancellationToken ct)
     {
         var result = await _pageService.UpdateAsync(id, request, ct);
+
         return result.Status switch
         {
             "ok" => Ok(result.Payload),
@@ -47,6 +48,6 @@ public class PagesController : ControllerBase
     }
 
     [HttpGet("{id:guid}/backlinks")]
-    public async Task<IActionResult> GetBacklinks(Guid id, CancellationToken ct)
+    public async Task<IActionResult> Backlinks(Guid id, CancellationToken ct)
         => Ok(await _pageService.GetBacklinksAsync(id, ct));
 }

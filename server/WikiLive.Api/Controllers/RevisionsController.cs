@@ -21,7 +21,7 @@ public class RevisionsController : ControllerBase
     [HttpPost("{revisionId:guid}/restore")]
     public async Task<IActionResult> Restore(Guid pageId, Guid revisionId, CancellationToken ct)
     {
-        var restored = await _pageService.RestoreRevisionAsync(pageId, revisionId, ct);
-        return restored is null ? NotFound() : Ok(restored);
+        var result = await _pageService.RestoreRevisionAsync(pageId, revisionId, ct);
+        return result is null ? NotFound() : Ok(result);
     }
 }

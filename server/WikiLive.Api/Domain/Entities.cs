@@ -35,12 +35,22 @@ public class PageLink
     public DateTime CreatedAtUtc { get; set; } = DateTime.UtcNow;
 }
 
+
 public class PageComment
 {
     public Guid Id { get; set; }
     public Guid PageId { get; set; }
+
+    public Guid? ParentCommentId { get; set; }
+
     public string AnchorJson { get; set; } = "{}";
+
     public string Text { get; set; } = string.Empty;
-    public string AuthorId { get; set; } = "demo-user";
-    public DateTime CreatedAtUtc { get; set; } = DateTime.UtcNow;
+
+    public string AuthorId { get; set; } = string.Empty;
+    public DateTime CreatedAtUtc { get; set; }
+    public bool IsResolved { get; set; }
+    public string? ResolvedBy { get; set; }
+    public DateTime? ResolvedAtUtc { get; set; }
 }
+
